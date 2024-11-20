@@ -1,6 +1,7 @@
 import os
 import getpass
 import time
+import json
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from langchain_groq import ChatGroq
@@ -26,7 +27,7 @@ class ChatRequest(BaseModel):
     question: str
 
 class ChatResponse(BaseModel):
-    reply: str
+    response: str
 
 llm = ChatGroq(
     model="llama-3.2-3b-preview",
@@ -67,16 +68,16 @@ def ask_if_need_tavily(question):
 
 def stream_response(prompt, delay=0.01):
     """
-    Streams response character by character with a natural typing effect.
+    Accumulates response and returns it as a complete string
     """
     try:
+        full_response = ""
         response = llm.stream(prompt)
         for chunk in response:
-            for char in chunk.content:
-                yield char
-                time.sleep(delay)  # Simulate typing delay
+            full_response += chunk.content
+        return full_response
     except Exception as e:
-        yield f"\n[Error in streaming response]: {str(e)}"
+        return f"[Error in streaming response]: {str(e)}"
 
 def fetch_latest_info_and_respond_stream(user_question):
     """
@@ -101,12 +102,9 @@ def fetch_latest_info_and_respond_stream(user_question):
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     user_input = request.question
-
-    # Periksa apakah memerlukan Tavily
     need_internet = ask_if_need_tavily(user_input)
 
     if need_internet:
-        # Gunakan Tavily untuk mendapatkan informasi terbaru
         search_results = tavily_client.search(
             query=user_input,
             search_depth="advanced"
@@ -115,17 +113,15 @@ async def chat(request: ChatRequest):
         context = "\n\n".join([result["content"] for result in search_results])
         prompt = prompt_template.format(context=context, question=user_input)
     else:
-        # Prompt biasa tanpa Tavily
         prompt = user_input
 
-    # Streaming respons secara bertahap
     async def stream_generator():
         try:
             response = llm.stream(prompt)
             for chunk in response:
-                for char in chunk.content:
-                    yield char
+                yield json.dumps({"response": chunk.content}) + "\n"
         except Exception as e:
-            yield f"[Error in streaming response]: {str(e)}"
+            yield json.dumps({"error": str(e)}) + "\n"
 
-    return StreamingResponse(stream_generator(), media_type="text/plain")
+    return StreamingResponse(stream_generator(), media_type="application/json")
+    
